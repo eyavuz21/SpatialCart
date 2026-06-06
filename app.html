@@ -1,0 +1,1165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#ffffff" />
+  <title>SpatialCart — Shopping Route Optimizer</title>
+
+  <!-- Auth gate: must be signed in to use the app -->
+  <script>
+    try { if (!localStorage.getItem('spatialcart_user')) location.replace('index.html'); } catch (e) { location.replace('index.html'); }
+  </script>
+
+  <!-- Tailwind (CDN, JIT) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            ink:    { 900: '#ffffff', 800: '#f1f5f9', 700: '#f4f7fb', 600: '#d8e0ec' },
+            neon:   { lime: '#1d4ed8', cyan: '#2563eb', violet: '#4338ca' },
+            gray:   { 100:'#0f172a', 200:'#1e293b', 300:'#334155', 400:'#475569', 500:'#64748b', 600:'#94a3b8', 700:'#cbd5e1', 800:'#e2e8f0', 900:'#f8fafc' },
+          },
+          fontFamily: {
+            sans: ['ui-sans-serif', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'sans-serif'],
+          },
+          boxShadow: {
+            glow: '0 0 0 1px rgba(29,78,216,0.20), 0 10px 30px -8px rgba(29,78,216,0.35)',
+          }
+        }
+      }
+    }
+  </script>
+
+  <style>
+    html, body { background: #ffffff; -webkit-tap-highlight-color: transparent; }
+    /* Light theme — let the OSM tiles render naturally, just a touch softer */
+    .leaflet-tile-pane { filter: saturate(0.92) brightness(1.02); }
+    .leaflet-container { background: #e8eef5; font-family: inherit; }
+    .leaflet-control-attribution { background: rgba(255,255,255,0.82) !important; color: #64748b !important; }
+    .leaflet-control-attribution a { color: #475569 !important; }
+    .leaflet-bar a { background: #ffffff !important; color: #1e293b !important; border-color: #d8e0ec !important; }
+    /* Pulse animation for store markers */
+    @keyframes pulse-ring { 0% { transform: scale(.6); opacity: .9; } 100% { transform: scale(2.4); opacity: 0; } }
+    .store-dot { position: relative; }
+    .store-dot::after {
+      content: ''; position: absolute; inset: 0; border-radius: 9999px;
+      background: currentColor; animation: pulse-ring 1.8s ease-out infinite;
+    }
+    /* live-location button while actively tracking */
+    .locate-active { color: #2563eb !important; border-color: rgba(37,99,235,0.6) !important; box-shadow: 0 0 0 1px rgba(37,99,235,0.35), 0 0 18px -2px rgba(37,99,235,0.55) !important; }
+    .scrollbar-thin::-webkit-scrollbar { width: 6px; }
+    .scrollbar-thin::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 9999px; }
+    .fade-in { animation: fade .35s ease both; }
+    @keyframes fade { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+    .sheet-in { animation: sheet .3s cubic-bezier(.2,.8,.2,1) both; }
+    @keyframes sheet { from { opacity: 0; transform: translateY(24px) scale(.98); } to { opacity: 1; transform: none; } }
+  </style>
+</head>
+
+<body class="text-gray-200 font-sans antialiased min-h-screen flex justify-center">
+  <!-- Phone-width app shell, centered on larger screens -->
+  <div class="w-full max-w-md min-h-screen flex flex-col bg-ink-900 relative">
+
+    <!-- ============ HEADER ============ -->
+    <header class="sticky top-0 z-30 backdrop-blur bg-ink-900/80 border-b border-ink-600 px-5 pt-5 pb-4">
+      <div class="flex items-center justify-between">
+        <div class="flex items-center gap-2.5">
+          <div class="h-9 w-9 rounded-xl bg-neon-lime/15 grid place-items-center ring-1 ring-neon-lime/30">
+            <svg viewBox="0 0 24 24" class="h-5 w-5 text-neon-lime" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 6h18M6 6l1.5 12.5A2 2 0 0 0 9.5 20h5a2 2 0 0 0 2-1.5L18 6M9 11h6"/>
+            </svg>
+          </div>
+          <div>
+            <h1 class="text-lg font-bold tracking-tight leading-none">SpatialCart</h1>
+            <p id="userTag" class="text-[11px] text-gray-500 mt-0.5">Shopping route optimizer</p>
+          </div>
+        </div>
+        <div class="flex items-center gap-3">
+          <a href="journey.html" title="Your 5-month journey"
+             class="rounded-xl border border-ink-600 bg-ink-700/60 hover:border-neon-cyan/50 px-3 py-2 flex items-center gap-1.5 text-xs font-semibold text-gray-300 transition active:scale-95">
+            <svg viewBox="0 0 24 24" class="h-4 w-4 text-neon-cyan" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="m7 13 3-3 3 3 5-6"/></svg>
+            Savings
+          </a>
+          <div class="text-right">
+            <div class="text-[10px] uppercase tracking-wider text-gray-500">Points</div>
+            <div id="pointsBadge" class="text-base font-bold text-neon-cyan tabular-nums">0</div>
+          </div>
+          <button id="signOutBtn" title="Sign out" aria-label="Sign out"
+            class="rounded-xl border border-ink-600 bg-ink-700/60 hover:border-red-400 hover:text-red-500 px-2.5 py-2 text-gray-500 transition active:scale-95">
+            <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5M21 12H9"/></svg>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- ============ SCROLLABLE CONTENT ============ -->
+    <main class="flex-1 overflow-y-auto scrollbar-thin px-5 pt-5 pb-32 space-y-6">
+
+      <!-- ---- BASKET INPUT ---- -->
+      <section>
+        <div class="flex items-baseline justify-between mb-2.5">
+          <h2 class="text-sm font-semibold text-gray-300 flex items-center gap-2">
+            <span class="text-neon-lime">●</span> Shopping Basket
+          </h2>
+          <span id="basketCount" class="text-xs text-gray-500">0 items</span>
+        </div>
+
+        <form id="addForm" class="flex gap-2">
+          <input id="itemInput" type="text" autocomplete="off" inputmode="text"
+            placeholder="Add an item — e.g. oat milk"
+            class="flex-1 rounded-xl bg-ink-700 border border-ink-600 px-4 py-3 text-sm placeholder-gray-600
+                   focus:outline-none focus:border-neon-lime/60 focus:ring-2 focus:ring-neon-lime/20 transition" />
+          <button type="submit" aria-label="Add item"
+            class="shrink-0 rounded-xl bg-neon-lime text-ink-900 font-bold px-4 grid place-items-center
+                   active:scale-95 transition shadow-glow">
+            <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+          </button>
+        </form>
+
+        <button id="scanListBtn" type="button"
+          class="mt-2 w-full rounded-xl border border-ink-600 bg-ink-700/50 hover:border-neon-violet/50
+                 text-gray-300 text-xs font-semibold py-2.5 flex items-center justify-center gap-2
+                 active:scale-[.98] transition">
+          <svg viewBox="0 0 24 24" class="h-4 w-4 text-neon-violet" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7V5a1 1 0 0 1 1-1h2M4 17v2a1 1 0 0 0 1 1h2m10-16h2a1 1 0 0 1 1 1v2m-3 13h2a1 1 0 0 0 1-1v-2"/><path d="M8 9h8M8 13h6"/></svg>
+          Scan written shopping list
+        </button>
+
+        <ul id="basketList" class="mt-3 space-y-2"></ul>
+
+        <p id="emptyHint" class="mt-3 text-center text-xs text-gray-600 py-6 border border-dashed border-ink-600 rounded-xl">
+          Your basket is empty. Add items, or scan a written list above.
+        </p>
+      </section>
+
+      <!-- ---- ROUTE PRIORITY TOGGLE ---- -->
+      <section>
+        <h2 class="text-sm font-semibold text-gray-300 mb-2.5">Route Priority</h2>
+        <div id="priorityGroup" role="tablist" class="grid grid-cols-3 gap-2 p-1 rounded-2xl bg-ink-700 border border-ink-600">
+          <button data-mode="express" role="tab"
+            class="prio-btn flex flex-col items-center gap-1 py-2.5 rounded-xl text-xs font-semibold transition">
+            <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/></svg>
+            Express
+          </button>
+          <button data-mode="balanced" role="tab"
+            class="prio-btn flex flex-col items-center gap-1 py-2.5 rounded-xl text-xs font-semibold transition">
+            <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2.1 2.1m8.6 8.6 2.1 2.1m0-12.8-2.1 2.1M7.7 16.3l-2.1 2.1"/><circle cx="12" cy="12" r="3"/></svg>
+            Balanced
+          </button>
+          <button data-mode="scavenger" role="tab"
+            class="prio-btn flex flex-col items-center gap-1 py-2.5 rounded-xl text-xs font-semibold transition">
+            <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+            Scavenger
+          </button>
+        </div>
+        <p id="prioDesc" class="mt-2 text-xs text-gray-500 leading-relaxed"></p>
+      </section>
+
+      <!-- ---- MAP ---- -->
+      <section>
+        <div class="flex items-baseline justify-between mb-2.5">
+          <h2 class="text-sm font-semibold text-gray-300">Shopping Trajectory</h2>
+          <span id="routeMeta" class="text-xs text-gray-500"></span>
+        </div>
+
+        <div class="relative rounded-2xl overflow-hidden border border-ink-600 bg-ink-800">
+          <div id="map" class="h-72 w-full"></div>
+
+          <!-- live-location toggle (bottom-right of map) -->
+          <button id="locateBtn" type="button" aria-label="Track my location"
+            class="absolute z-[450] bottom-3 right-3 h-11 w-11 rounded-full bg-ink-700/90 border border-ink-600 backdrop-blur
+                   grid place-items-center text-gray-300 hover:border-sky-400/60 active:scale-90 transition shadow-lg">
+            <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3m0 14v3M2 12h3m14 0h3"/></svg>
+          </button>
+
+          <!-- overlay shown before a route exists -->
+          <div id="mapPlaceholder" class="absolute inset-0 z-[400] grid place-items-center bg-ink-800/70 backdrop-blur-sm pointer-events-none text-center px-8">
+            <div>
+              <svg viewBox="0 0 24 24" class="h-9 w-9 mx-auto text-gray-600 mb-2" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 20 3 17V4l6 3 6-3 6 3v13l-6-3-6 3z"/><path d="M9 7v13M15 4v13"/></svg>
+              <p class="text-sm text-gray-400 font-medium">No route yet</p>
+              <p class="text-xs text-gray-600 mt-1">Add items, then tap “Optimize Route”.</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- route stop summary -->
+        <div id="routeSummary" class="mt-3 space-y-2 hidden"></div>
+      </section>
+    </main>
+
+    <!-- ============ STICKY ACTION BAR ============ -->
+    <div class="absolute bottom-0 left-0 right-0 z-30 px-5 pt-3 pb-5
+                bg-gradient-to-t from-ink-900 via-ink-900/95 to-transparent">
+      <div class="flex gap-2.5">
+        <button id="scanBtn"
+          class="shrink-0 rounded-2xl bg-ink-700 border border-ink-600 px-4 py-3.5 flex items-center gap-2
+                 text-sm font-semibold text-neon-cyan active:scale-95 transition">
+          <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7V5a1 1 0 0 1 1-1h2M4 17v2a1 1 0 0 0 1 1h2m10-16h2a1 1 0 0 1 1 1v2m-3 13h2a1 1 0 0 0 1-1v-2M7 12h10"/></svg>
+          Scan Receipt
+        </button>
+        <button id="optimizeBtn"
+          class="flex-1 rounded-2xl bg-neon-lime text-ink-900 font-bold py-3.5 text-sm
+                 active:scale-[.98] transition shadow-glow disabled:opacity-40 disabled:shadow-none flex items-center justify-center gap-2">
+          <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>
+          Optimize Route
+        </button>
+      </div>
+    </div>
+
+    <!-- ============ RECEIPT SCAN MODAL ============ -->
+    <div id="scanModal" class="fixed inset-0 z-50 hidden">
+      <div id="scanBackdrop" class="absolute inset-0 bg-black/70 backdrop-blur-sm"></div>
+
+      <div class="absolute inset-x-0 bottom-0 flex justify-center">
+        <div class="w-full max-w-md sheet-in bg-ink-800 border-t border-ink-600 rounded-t-3xl p-6 pb-8">
+          <div class="mx-auto h-1.5 w-12 rounded-full bg-ink-600 mb-5"></div>
+
+          <div class="flex items-start justify-between mb-1">
+            <h3 class="text-lg font-bold flex items-center gap-2">
+              <span class="text-neon-cyan">Scan Receipt for Points</span>
+            </h3>
+            <button id="scanClose" class="text-gray-500 hover:text-gray-300 -mt-1 -mr-1 p-1">
+              <svg viewBox="0 0 24 24" class="h-6 w-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+            </button>
+          </div>
+          <p class="text-xs text-gray-500 mb-5">Upload a photo of your receipt to earn loyalty points. (Mockup — no data is sent.)</p>
+
+          <!-- upload dropzone -->
+          <label id="dropzone" for="receiptFile"
+            class="block cursor-pointer rounded-2xl border-2 border-dashed border-ink-600 hover:border-neon-cyan/50
+                   bg-ink-700/50 px-6 py-10 text-center transition">
+            <div id="dzIdle">
+              <svg viewBox="0 0 24 24" class="h-10 w-10 mx-auto text-neon-cyan mb-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4m0 0L8 8m4-4 4 4"/><path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+              <p class="text-sm font-semibold text-gray-200">Tap to upload receipt</p>
+              <p class="text-xs text-gray-500 mt-1">JPG or PNG · or take a photo</p>
+            </div>
+            <div id="dzPreview" class="hidden">
+              <img id="previewImg" alt="receipt preview" class="max-h-40 mx-auto rounded-lg mb-3 ring-1 ring-ink-600" />
+              <p id="fileName" class="text-xs text-gray-400 truncate"></p>
+            </div>
+          </label>
+          <input id="receiptFile" type="file" accept="image/*" capture="environment" class="hidden" />
+
+          <!-- processing / result -->
+          <div id="scanStatus" class="hidden mt-4 text-center text-sm"></div>
+
+          <button id="scanSubmit" disabled
+            class="mt-5 w-full rounded-2xl bg-neon-cyan text-ink-900 font-bold py-3.5 text-sm
+                   active:scale-[.98] transition disabled:opacity-40 flex items-center justify-center gap-2">
+            <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+            Done
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ SHOPPING-LIST SCAN MODAL ============ -->
+    <div id="listModal" class="fixed inset-0 z-50 hidden">
+      <div id="listBackdrop" class="absolute inset-0 bg-black/70 backdrop-blur-sm"></div>
+
+      <div class="absolute inset-x-0 bottom-0 flex justify-center">
+        <div class="w-full max-w-md sheet-in bg-ink-800 border-t border-ink-600 rounded-t-3xl p-6 pb-8">
+          <div class="mx-auto h-1.5 w-12 rounded-full bg-ink-600 mb-5"></div>
+
+          <div class="flex items-start justify-between mb-1">
+            <h3 class="text-lg font-bold flex items-center gap-2">
+              <span class="text-neon-violet">Scan Shopping List</span>
+            </h3>
+            <button id="listClose" class="text-gray-500 hover:text-gray-300 -mt-1 -mr-1 p-1">
+              <svg viewBox="0 0 24 24" class="h-6 w-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+            </button>
+          </div>
+          <p class="text-xs text-gray-500 mb-5">Snap a photo of a handwritten or printed list — we’ll read the items and add them to your basket. (Mockup — no data is sent.)</p>
+
+          <label id="listDropzone" for="listFile"
+            class="block cursor-pointer rounded-2xl border-2 border-dashed border-ink-600 hover:border-neon-violet/50
+                   bg-ink-700/50 px-6 py-10 text-center transition">
+            <div id="listDzIdle">
+              <svg viewBox="0 0 24 24" class="h-10 w-10 mx-auto text-neon-violet mb-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h5"/></svg>
+              <p class="text-sm font-semibold text-gray-200">Tap to upload your list</p>
+              <p class="text-xs text-gray-500 mt-1">JPG or PNG · or take a photo</p>
+            </div>
+            <div id="listDzPreview" class="hidden">
+              <img id="listPreviewImg" alt="list preview" class="max-h-40 mx-auto rounded-lg mb-3 ring-1 ring-ink-600" />
+              <p id="listFileName" class="text-xs text-gray-400 truncate"></p>
+            </div>
+          </label>
+          <input id="listFile" type="file" accept="image/*" capture="environment" class="hidden" />
+
+          <div id="listStatus" class="hidden mt-4 text-center text-sm"></div>
+
+          <button id="listSubmit" disabled
+            class="mt-5 w-full rounded-2xl bg-neon-violet text-white font-bold py-3.5 text-sm
+                   active:scale-[.98] transition disabled:opacity-40 flex items-center justify-center gap-2">
+            <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+            Done
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- toast -->
+    <div id="toast" class="pointer-events-none fixed left-1/2 -translate-x-1/2 bottom-28 z-[60] hidden">
+      <div class="rounded-full bg-ink-600 border border-ink-600 px-4 py-2 text-sm shadow-lg fade-in"></div>
+    </div>
+  </div>
+
+  <script>
+  /* ============================================================
+     SpatialCart — client-side logic
+     ============================================================ */
+  (() => {
+    'use strict';
+
+    // ---- State ----
+    const state = {
+      basket: [],          // [{id, name}]
+      priority: 'balanced',
+      points: 0,
+      pendingFile: null,
+    };
+
+    const PRIORITY_INFO = {
+      express:   'Minimizes total stops and travel distance. Fastest trip, ignores price differences.',
+      balanced:  'Mathematically optimized trade-off between travel time and cost — maximizes net value (savings minus the cost of detours).',
+      scavenger: 'Maximizes absolute financial savings by visiting the cheapest store per item, regardless of distance.',
+    };
+
+    // ============================================================
+    //  MOCK DATASET — local stores with per-item prices & stock
+    // ============================================================
+    const HOME = { lat: 51.5074, lng: -0.1278, name: 'Home' };
+
+    // Canonical catalog: reference base price (£) per item.
+    const CATALOG = {
+      'oat milk':     1.80,
+      'bananas':      1.10,
+      'coffee beans': 6.50,
+      'bread':        1.40,
+      'eggs':         2.60,
+      'chicken':      5.20,
+      'rice':         2.20,
+      'tomatoes':     1.60,
+    };
+    // Loose synonyms so free-text input maps onto the catalog.
+    const ITEM_ALIASES = {
+      'milk': 'oat milk', 'banana': 'bananas', 'coffee': 'coffee beans',
+      'tomato': 'tomatoes', 'egg': 'eggs',
+    };
+
+    // Store definitions: location, brand colour, overall price multiplier,
+    // and an explicit out-of-stock list. Concrete catalogs are built below.
+    const STORE_DEFS = [
+      { name: 'QuickMart',   lat: 51.5101, lng: -0.1200, color: '#0891b2', factor: 1.12, out: ['chicken'] },
+      { name: 'ValueDepot',  lat: 51.4990, lng: -0.1430, color: '#2563eb', factor: 0.82, out: ['coffee beans'] },
+      { name: 'FreshCorner', lat: 51.5145, lng: -0.1355, color: '#7c3aed', factor: 0.98, out: [] },
+      { name: 'MegaSaver',   lat: 51.4955, lng: -0.1095, color: '#db2777', factor: 0.75, out: ['oat milk', 'eggs'] },
+      { name: 'CityGrocer',  lat: 51.5180, lng: -0.1180, color: '#d97706', factor: 1.05, out: [] },
+    ];
+
+    // Materialize each store's catalog: { item: { price, stock } }.
+    // A small deterministic per-item jitter keeps prices from being uniform,
+    // so the cheapest store genuinely varies item-by-item.
+    const STORES = STORE_DEFS.map(def => {
+      const items = {};
+      Object.entries(CATALOG).forEach(([name, base], i) => {
+        const jitter = 1 + (((def.name.charCodeAt(0) + i * 7) % 11) - 5) / 100; // ±5%
+        const price = Math.round(base * def.factor * jitter * 100) / 100;
+        items[name] = { price, stock: !def.out.includes(name) };
+      });
+      return { name: def.name, lat: def.lat, lng: def.lng, color: def.color, items };
+    });
+
+    // ---- List resolution: map free-text basket entries onto the catalog ----
+    function canonicalItem(raw) {
+      const n = raw.trim().toLowerCase();
+      if (CATALOG[n]) return n;
+      if (ITEM_ALIASES[n]) return ITEM_ALIASES[n];
+      return Object.keys(CATALOG).find(k => k.includes(n) || n.includes(k)) || null;
+    }
+    function resolveBasket(basket) {
+      const matched = [], unmatched = [], seen = new Set();
+      basket.forEach(it => {
+        const c = canonicalItem(it.name);
+        if (c) { if (!seen.has(c)) { matched.push(c); seen.add(c); } }
+        else unmatched.push(it.name);
+      });
+      return { matched, unmatched };
+    }
+
+    // ============================================================
+    //  CROWDSOURCED RECEIPTS — mock OCR + merge into live dataset
+    // ============================================================
+    // Pool of community-reported storefronts a receipt might introduce.
+    const CROWD_STORES = [
+      { name: 'Corner Co-op', lat: 51.5060, lng: -0.1210, color: '#059669' },
+      { name: 'Market Stall', lat: 51.5125, lng: -0.1320, color: '#ea580c' },
+      { name: 'Night Grocer', lat: 51.5035, lng: -0.1335, color: '#9333ea' },
+      { name: 'Daily Basket', lat: 51.5160, lng: -0.1240, color: '#e11d48' },
+    ];
+    let crowdIdx = 0;
+
+    // Simulated OCR — returns a parsed receipt matching our schema:
+    //   { timestamp, storeName, location:{lat,lng}, items:[{name,price}] }
+    function generateMockReceipt() {
+      const names = Object.keys(CATALOG);
+      const picked = [...names].sort(() => Math.random() - 0.5).slice(0, 3 + Math.floor(Math.random() * 3));
+
+      // Half the time a known store reports fresh prices; half, a new vendor.
+      let store;
+      if (Math.random() < 0.5) {
+        const ex = STORES[Math.floor(Math.random() * STORES.length)];
+        store = { name: ex.name, lat: ex.lat, lng: ex.lng, isNew: false };
+      } else {
+        const c = CROWD_STORES[crowdIdx++ % CROWD_STORES.length];
+        store = { name: c.name, lat: c.lat, lng: c.lng, color: c.color, isNew: true };
+      }
+
+      // Crowdsourced prices skew cheaper (70–95% of base) — makes them matter.
+      const items = picked.map(name => ({
+        name,
+        price: Math.round(CATALOG[name] * (0.70 + Math.random() * 0.25) * 100) / 100,
+      }));
+
+      return {
+        timestamp: new Date().toISOString(),
+        storeName: store.name,
+        location: { lat: store.lat, lng: store.lng },
+        color: store.color,
+        isNew: store.isNew,
+        items,
+      };
+    }
+
+    // Merge a parsed receipt straight into the global STORES dataset, so the
+    // optimizer factors in the new prices on the very next calculation.
+    function mergeReceipt(receipt) {
+      let store = STORES.find(s => s.name === receipt.storeName);
+      const isNew = !store;
+      if (isNew) {
+        store = {
+          name: receipt.storeName, lat: receipt.location.lat, lng: receipt.location.lng,
+          color: receipt.color || '#059669', items: {}, crowd: true,
+        };
+        STORES.push(store);
+      }
+      receipt.items.forEach(({ name, price }) => { store.items[name] = { price, stock: true }; });
+      return { store, isNew };
+    }
+
+    // Simulated handwriting/print OCR for a shopping list — returns item names.
+    function generateMockShoppingList() {
+      const names = Object.keys(CATALOG);
+      const n = 4 + Math.floor(Math.random() * 3); // 4–6 items
+      return [...names].sort(() => Math.random() - 0.5).slice(0, n)
+        .map(s => s.replace(/\b\w/g, c => c.toUpperCase())); // Title Case
+    }
+
+    // ---- DOM ----
+    const $ = (s) => document.querySelector(s);
+    const els = {
+      addForm: $('#addForm'), itemInput: $('#itemInput'),
+      basketList: $('#basketList'), basketCount: $('#basketCount'), emptyHint: $('#emptyHint'),
+      priorityGroup: $('#priorityGroup'), prioDesc: $('#prioDesc'),
+      optimizeBtn: $('#optimizeBtn'), routeMeta: $('#routeMeta'),
+      routeSummary: $('#routeSummary'), mapPlaceholder: $('#mapPlaceholder'),
+      locateBtn: $('#locateBtn'),
+      pointsBadge: $('#pointsBadge'),
+      scanBtn: $('#scanBtn'), scanModal: $('#scanModal'), scanClose: $('#scanClose'),
+      scanBackdrop: $('#scanBackdrop'), receiptFile: $('#receiptFile'),
+      dzIdle: $('#dzIdle'), dzPreview: $('#dzPreview'), previewImg: $('#previewImg'),
+      fileName: $('#fileName'), scanSubmit: $('#scanSubmit'), scanStatus: $('#scanStatus'),
+      // shopping-list scan
+      scanListBtn: $('#scanListBtn'), listModal: $('#listModal'), listClose: $('#listClose'),
+      listBackdrop: $('#listBackdrop'), listFile: $('#listFile'),
+      listDzIdle: $('#listDzIdle'), listDzPreview: $('#listDzPreview'),
+      listPreviewImg: $('#listPreviewImg'), listFileName: $('#listFileName'),
+      listSubmit: $('#listSubmit'), listStatus: $('#listStatus'),
+      toast: $('#toast'),
+    };
+
+    // ---- Leaflet map ----
+    const map = L.map('map', { zoomControl: true, attributionControl: true }).setView([HOME.lat, HOME.lng], 13);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19, attribution: '© OpenStreetMap'
+    }).addTo(map);
+    setTimeout(() => map.invalidateSize(), 200);
+
+    let routeLayer = L.layerGroup().addTo(map);
+    let meLayer = L.layerGroup().addTo(map);   // live-location dot lives here, separate from the route
+
+    // Pulsing blue "you are here" marker.
+    function meIcon() {
+      return L.divIcon({
+        className: '',
+        html: `<div class="store-dot" style="color:#2563eb">
+                 <div style="position:relative;z-index:2;width:16px;height:16px;border-radius:9999px;background:#2563eb;border:3px solid #ffffff;box-shadow:0 0 0 2px #2563eb99, 0 1px 4px rgba(15,23,42,.3)"></div>
+               </div>`,
+        iconSize: [16, 16], iconAnchor: [8, 8],
+      });
+    }
+
+    function dotIcon(color, label) {
+      return L.divIcon({
+        className: '',
+        html: `<div class="store-dot" style="color:${color}">
+                 <div style="position:relative;z-index:2;width:14px;height:14px;border-radius:9999px;background:${color};border:2px solid #08080c;box-shadow:0 0 0 2px ${color}55"></div>
+                 ${label ? `<div style="position:absolute;top:-22px;left:50%;transform:translateX(-50%);white-space:nowrap;font-size:10px;font-weight:700;color:#1e293b;background:#ffffff;border:1px solid #cbd5e1;box-shadow:0 1px 3px rgba(15,23,42,.18);padding:1px 6px;border-radius:6px">${label}</div>` : ''}
+               </div>`,
+        iconSize: [14, 14], iconAnchor: [7, 7],
+      });
+    }
+
+    // ---- Geo helpers ----
+    const toRad = (d) => d * Math.PI / 180;
+    function haversine(a, b) {
+      const R = 6371;
+      const dLat = toRad(b.lat - a.lat), dLng = toRad(b.lng - a.lng);
+      const x = Math.sin(dLat/2)**2 + Math.cos(toRad(a.lat))*Math.cos(toRad(b.lat))*Math.sin(dLng/2)**2;
+      return 2 * R * Math.asin(Math.sqrt(x));
+    }
+
+    // ---- Basket ----
+    let uid = 0;
+    function addItem(name) {
+      name = name.trim();
+      if (!name) return;
+      state.basket.push({ id: ++uid, name });
+      renderBasket();
+    }
+    function removeItem(id) {
+      state.basket = state.basket.filter(i => i.id !== id);
+      renderBasket();
+    }
+    function renderBasket() {
+      const n = state.basket.length;
+      els.basketCount.textContent = `${n} item${n === 1 ? '' : 's'}`;
+      els.emptyHint.classList.toggle('hidden', n > 0);
+      els.optimizeBtn.disabled = n === 0;
+      els.basketList.innerHTML = '';
+      state.basket.forEach((item, idx) => {
+        const li = document.createElement('li');
+        li.className = 'fade-in flex items-center gap-3 rounded-xl bg-ink-700 border border-ink-600 px-3.5 py-2.5';
+        li.innerHTML = `
+          <span class="grid place-items-center h-6 w-6 rounded-lg bg-ink-600 text-[11px] font-bold text-gray-400 tabular-nums">${idx + 1}</span>
+          <span class="flex-1 text-sm">${escapeHtml(item.name)}</span>
+          <button class="text-gray-600 hover:text-red-400 p-1 active:scale-90 transition" aria-label="Remove">
+            <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M8 6V4h8v2m-9 0 1 14h8l1-14"/></svg>
+          </button>`;
+        li.querySelector('button').addEventListener('click', () => removeItem(item.id));
+        els.basketList.appendChild(li);
+      });
+    }
+    function escapeHtml(s) {
+      return s.replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+    }
+
+    // ---- Priority toggle ----
+    function setPriority(mode) {
+      state.priority = mode;
+      els.prioDesc.textContent = PRIORITY_INFO[mode];
+      document.querySelectorAll('.prio-btn').forEach(btn => {
+        const active = btn.dataset.mode === mode;
+        btn.setAttribute('aria-selected', active);
+        btn.classList.toggle('bg-neon-lime', active);
+        btn.classList.toggle('text-ink-900', active);
+        btn.classList.toggle('shadow-glow', active);
+        btn.classList.toggle('text-gray-400', !active);
+      });
+    }
+    els.priorityGroup.addEventListener('click', (e) => {
+      const btn = e.target.closest('.prio-btn');
+      if (btn) setPriority(btn.dataset.mode);
+    });
+
+    // ============================================================
+    //  OPTIMIZATION ENGINE
+    //  optimize(items, mode) -> result
+    //    result = { feasible, mode, stops[], totalCost, distance,
+    //               minutes, missing[], savings?, baseline?, note? }
+    //    each stop = { store, lines:[{name,price}], subtotal, leg, index }
+    // ============================================================
+    const SPLIT_THRESHOLD = 5;   // £ — Balanced only splits if it saves more
+    const MIN_PER_KM = 4;        // travel-time model
+    const MIN_PER_STOP = 8;      // shopping time per store
+
+    function optimize(items, mode) {
+      if (!items.length) return { feasible: false, reason: 'Shopping list is empty.' };
+
+      const result =
+        mode === 'express'   ? solveExpress(items) :
+        mode === 'scavenger' ? solveScavenger(items) :
+                               solveBalanced(items);
+
+      // Attach a savings figure vs. the priciest store that stocks everything.
+      if (result.feasible) {
+        const fullStock = STORES.filter(s => items.every(i => s.items[i]?.stock));
+        if (fullStock.length) {
+          const baseline = Math.max(...fullStock.map(s => itemCost(s, items)));
+          result.baseline = baseline;
+          result.savings = Math.max(0, baseline - result.totalCost);
+        }
+      }
+      return result;
+    }
+
+    // ---- EXPRESS: single closest store that stocks the entire list ----
+    function solveExpress(items) {
+      const candidate = STORES
+        .filter(s => items.every(i => s.items[i]?.stock))
+        .map(s => ({ s, dist: haversine(HOME, s) }))
+        .sort((a, b) => a.dist - b.dist)[0];
+
+      if (!candidate) {
+        return { feasible: false, mode: 'express',
+          reason: 'No single store stocks every item. Try Scavenger or Balanced.' };
+      }
+      const lines = items.map(i => ({ name: i, price: candidate.s.items[i].price }));
+      return buildResult('express', [{ store: candidate.s, lines }]);
+    }
+
+    // ---- SCAVENGER: cheapest source for every item, distance ignored ----
+    function solveScavenger(items) {
+      const byStore = new Map();
+      const missing = [];
+      items.forEach(i => {
+        let best = null;
+        STORES.forEach(s => {
+          const e = s.items[i];
+          if (e?.stock && (!best || e.price < best.price)) best = { store: s, price: e.price };
+        });
+        if (!best) { missing.push(i); return; }
+        if (!byStore.has(best.store)) byStore.set(best.store, []);
+        byStore.get(best.store).push({ name: i, price: best.price });
+      });
+      if (!byStore.size) return { feasible: false, mode: 'scavenger', reason: 'No items are available in any store.' };
+
+      const stops = orderStops([...byStore.entries()].map(([store, lines]) => ({ store, lines })));
+      return buildResult('scavenger', stops, missing);
+    }
+
+    // ---- BALANCED: Pareto compromise — cheapest single store vs. the best
+    //      2-store split, taking the split only if it clears the £ threshold ----
+    function solveBalanced(items) {
+      const singles = STORES
+        .filter(s => items.every(i => s.items[i]?.stock))
+        .map(s => ({ s, cost: itemCost(s, items) }))
+        .sort((a, b) => a.cost - b.cost);
+
+      const split = bestTwoStoreSplit(items);
+      const single = singles[0];
+
+      const singleResult = (note) => buildResult('balanced',
+        [{ store: single.s, lines: items.map(i => ({ name: i, price: single.s.items[i].price })) }], [], { note });
+
+      if (single && split) {
+        const savings = single.cost - split.cost;
+        if (savings >= SPLIT_THRESHOLD) {
+          return buildResult('balanced', orderStops(split.stops), [], {
+            note: `2-store split saves £${savings.toFixed(2)} vs. the cheapest single store (£${single.cost.toFixed(2)}) — above the £${SPLIT_THRESHOLD} threshold.`
+          });
+        }
+        return singleResult(`Single store wins — a 2-store split would save only £${Math.max(0, savings).toFixed(2)}, below the £${SPLIT_THRESHOLD} threshold.`);
+      }
+      if (single) return singleResult('No worthwhile 2-store split found; using the cheapest single store.');
+      if (split)  return buildResult('balanced', orderStops(split.stops), [], { note: 'No single store stocks everything; using the best nearby 2-store combination.' });
+
+      // Nothing within 2 stores can cover the list — fall back to Scavenger.
+      const sc = solveScavenger(items);
+      if (sc.feasible) sc.note = 'List needs more than 2 stores; fell back to a Scavenger-style route.';
+      return sc;
+    }
+
+    // Best pair of stores whose union covers the list, each item bought at the
+    // cheaper of the two. Minimizes cost, then distance (Pareto front, n=2).
+    function bestTwoStoreSplit(items) {
+      let best = null;
+      for (let a = 0; a < STORES.length; a++) {
+        for (let b = a + 1; b < STORES.length; b++) {
+          const s1 = STORES[a], s2 = STORES[b];
+          const byStore = new Map([[s1, []], [s2, []]]);
+          let ok = true;
+          for (const i of items) {
+            const p1 = s1.items[i]?.stock ? s1.items[i].price : Infinity;
+            const p2 = s2.items[i]?.stock ? s2.items[i].price : Infinity;
+            if (p1 === Infinity && p2 === Infinity) { ok = false; break; }
+            byStore.get(p1 <= p2 ? s1 : s2).push({ name: i, price: Math.min(p1, p2) });
+          }
+          if (!ok) continue;
+          const used = [...byStore.entries()].filter(([, l]) => l.length);
+          if (used.length < 2) continue; // both stores must actually be visited
+          const stops = used.map(([store, lines]) => ({ store, lines }));
+          const cost = used.reduce((t, [, l]) => t + l.reduce((x, it) => x + it.price, 0), 0);
+          const dist = routeDistance(stops);
+          if (!best || cost < best.cost - 1e-9 ||
+             (Math.abs(cost - best.cost) < 1e-9 && dist < best.dist)) {
+            best = { cost, dist, stops };
+          }
+        }
+      }
+      return best;
+    }
+
+    // ---- shared helpers ----
+    function itemCost(store, items) {
+      return items.reduce((t, i) => t + (store.items[i]?.stock ? store.items[i].price : 0), 0);
+    }
+    function orderStops(stops) {            // nearest-neighbour TSP from HOME
+      const remaining = [...stops], ordered = [];
+      let cur = HOME;
+      while (remaining.length) {
+        remaining.sort((a, b) => haversine(cur, a.store) - haversine(cur, b.store));
+        const next = remaining.shift();
+        ordered.push(next); cur = next.store;
+      }
+      return ordered;
+    }
+    function routeDistance(stops) {
+      const ordered = orderStops(stops);
+      let d = 0, prev = HOME;
+      ordered.forEach(s => { d += haversine(prev, s.store); prev = s.store; });
+      return d + haversine(prev, HOME);     // round trip
+    }
+    function buildResult(mode, stops, missing = [], extra = {}) {
+      let dist = 0, prev = HOME, totalCost = 0;
+      const detailed = stops.map((st, idx) => {
+        const leg = haversine(prev, st.store); dist += leg; prev = st.store;
+        const subtotal = st.lines.reduce((t, l) => t + l.price, 0);
+        totalCost += subtotal;
+        return { ...st, leg, subtotal, index: idx + 1 };
+      });
+      const returnLeg = haversine(prev, HOME); dist += returnLeg;
+      const minutes = Math.round(dist * MIN_PER_KM + stops.length * MIN_PER_STOP);
+      return { feasible: true, mode, stops: detailed, distance: dist, returnLeg,
+               totalCost, minutes, missing, ...extra };
+    }
+
+    function drawRoute(route) {
+      routeLayer.clearLayers();
+      const pts = [[HOME.lat, HOME.lng], ...route.stops.map(s => [s.store.lat, s.store.lng]), [HOME.lat, HOME.lng]];
+
+      // route line
+      L.polyline(pts, { color: '#1d4ed8', weight: 3, opacity: 0.9, dashArray: '1 8', lineCap: 'round' }).addTo(routeLayer);
+      L.polyline(pts, { color: '#1d4ed8', weight: 8, opacity: 0.15 }).addTo(routeLayer);
+
+      // home marker
+      L.marker([HOME.lat, HOME.lng], { icon: dotIcon('#0f172a', 'Home') }).addTo(routeLayer);
+      // store markers
+      route.stops.forEach((s, i) => {
+        L.marker([s.store.lat, s.store.lng], { icon: dotIcon(s.store.color, `${i+1}. ${s.store.name}`) }).addTo(routeLayer);
+      });
+
+      map.fitBounds(L.latLngBounds(pts), { padding: [40, 40], maxZoom: 15 });
+      els.mapPlaceholder.classList.add('hidden');
+      setTimeout(() => map.invalidateSize(), 100);
+    }
+
+    function renderSummary(route) {
+      els.routeMeta.textContent = `${route.distance.toFixed(1)} km · ~${route.minutes} min`;
+
+      // Step-by-step itinerary: each stop with its item lines + subtotal.
+      const stops = route.stops.map((s) => `
+        <div class="fade-in rounded-xl bg-ink-700 border border-ink-600 overflow-hidden">
+          <div class="flex items-center gap-3 px-3.5 py-3 border-b border-ink-600/70">
+            <span class="h-7 w-7 rounded-lg grid place-items-center text-xs font-bold text-ink-900" style="background:${s.store.color}">${s.index}</span>
+            <div class="flex-1 min-w-0">
+              <div class="text-sm font-semibold truncate">${s.store.name}</div>
+              <div class="text-[11px] text-gray-500">${s.leg.toFixed(1)} km from ${s.index === 1 ? 'home' : 'previous stop'} · ${s.lines.length} item${s.lines.length === 1 ? '' : 's'}</div>
+            </div>
+            <span class="text-sm font-bold text-neon-lime tabular-nums">£${s.subtotal.toFixed(2)}</span>
+          </div>
+          <ul class="px-3.5 py-2 space-y-1">
+            ${s.lines.map(l => `
+              <li class="flex justify-between text-[13px]">
+                <span class="text-gray-300 capitalize">${escapeHtml(l.name)}</span>
+                <span class="text-gray-400 tabular-nums">£${l.price.toFixed(2)}</span>
+              </li>`).join('')}
+          </ul>
+        </div>`).join('');
+
+      const returnLeg = `
+        <div class="flex items-center gap-3 px-3.5 py-2.5 rounded-xl border border-dashed border-ink-600 text-gray-500">
+          <span class="h-6 w-6 rounded-lg grid place-items-center bg-ink-600 text-[11px]">⌂</span>
+          <span class="flex-1 text-[13px]">Return home</span>
+          <span class="text-[11px] tabular-nums">${route.returnLeg.toFixed(1)} km</span>
+        </div>`;
+
+      const savingsCard = route.savings > 0
+        ? stat('Saved', '£' + route.savings.toFixed(2), 'text-neon-lime')
+        : stat('Stops', route.stops.length);
+
+      const note = route.note
+        ? `<p class="text-[11px] text-gray-500 leading-relaxed px-1">${escapeHtml(route.note)}</p>` : '';
+
+      const missing = route.missing && route.missing.length
+        ? `<div class="rounded-xl border border-amber-500/40 bg-amber-500/10 px-3.5 py-2.5 text-[12px] text-amber-700">
+             Unavailable anywhere: <span class="font-semibold capitalize">${route.missing.map(escapeHtml).join(', ')}</span>
+           </div>` : '';
+
+      const navBtn = `
+        <a href="${gmapsUrl(route)}" target="_blank" rel="noopener"
+           class="flex items-center justify-center gap-2 w-full rounded-xl bg-blue-800 border border-blue-900
+                  text-white font-semibold py-3 text-sm hover:bg-blue-900 active:scale-[.98] transition shadow-sm">
+          <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 12-9 12s-9-5-9-12a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+          Open route in Google Maps
+        </a>`;
+
+      els.routeSummary.innerHTML = `
+        <div class="grid grid-cols-3 gap-2">
+          ${stat('Total cost', '£' + route.totalCost.toFixed(2), 'text-neon-cyan')}
+          ${stat('Distance', route.distance.toFixed(1) + ' km')}
+          ${savingsCard}
+        </div>
+        ${navBtn}
+        ${note}
+        ${missing}
+        <div class="space-y-2">${stops}${returnLeg}</div>`;
+      els.routeSummary.classList.remove('hidden');
+    }
+
+    function renderInfeasible(result, unmatched) {
+      routeLayer.clearLayers();
+      els.mapPlaceholder.classList.remove('hidden');
+      els.routeMeta.textContent = '';
+      const warn = unmatched.length
+        ? `<div class="rounded-xl border border-amber-500/40 bg-amber-500/10 px-3.5 py-2.5 text-[12px] text-amber-700 mb-2">
+             Not in our catalog: <span class="font-semibold">${unmatched.map(escapeHtml).join(', ')}</span>
+           </div>` : '';
+      els.routeSummary.innerHTML = `${warn}
+        <div class="rounded-xl border border-ink-600 bg-ink-700 px-4 py-6 text-center text-sm text-gray-400">
+          ${escapeHtml(result.reason || 'No route could be generated.')}
+        </div>`;
+      els.routeSummary.classList.remove('hidden');
+    }
+    function stat(label, val, color = 'text-gray-100') {
+      return `<div class="rounded-xl bg-ink-700 border border-ink-600 px-3 py-2.5 text-center">
+        <div class="text-[10px] uppercase tracking-wide text-gray-500">${label}</div>
+        <div class="text-sm font-bold ${color} tabular-nums mt-0.5">${val}</div>
+      </div>`;
+    }
+
+    els.optimizeBtn.addEventListener('click', () => {
+      if (!state.basket.length) return;
+      els.optimizeBtn.disabled = true;
+      const original = els.optimizeBtn.innerHTML;
+      els.optimizeBtn.innerHTML = '<span class="animate-pulse">Optimizing…</span>';
+      setTimeout(() => {
+        const { matched, unmatched } = resolveBasket(state.basket);
+        const route = optimize(matched, state.priority);
+
+        if (route.feasible) {
+          route.unmatched = unmatched;
+          lastRoute = route;
+          drawRoute(route);
+          renderSummary(route);
+          if (watchId != null && meMarker) updateNextStop(meMarker.getLatLng());
+          if (unmatched.length) toast(`Skipped ${unmatched.length} unrecognized item${unmatched.length === 1 ? '' : 's'}`);
+          else toast(`Route ready · ${route.stops.length} stop${route.stops.length === 1 ? '' : 's'} · £${route.totalCost.toFixed(2)}`);
+        } else {
+          renderInfeasible(route, unmatched);
+          toast(route.reason || 'No route found');
+        }
+
+        els.optimizeBtn.innerHTML = original;
+        els.optimizeBtn.disabled = false;
+      }, 650);
+    });
+
+    // ---- Receipt scan modal ----
+    function openScan() {
+      els.scanModal.classList.remove('hidden');
+      document.body.style.overflow = 'hidden';
+    }
+    function closeScan() {
+      els.scanModal.classList.add('hidden');
+      document.body.style.overflow = '';
+      resetScan();
+    }
+    function resetScan() {
+      state.pendingFile = null;
+      els.receiptFile.value = '';
+      els.dzIdle.classList.remove('hidden');
+      els.dzPreview.classList.add('hidden');
+      els.scanStatus.classList.add('hidden');
+      els.scanStatus.innerHTML = '';
+      els.scanSubmit.disabled = true;
+    }
+
+    els.scanBtn.addEventListener('click', openScan);
+    els.scanClose.addEventListener('click', closeScan);
+    els.scanBackdrop.addEventListener('click', closeScan);
+
+    const DONE_BTN_HTML = els.scanSubmit.innerHTML;
+
+    els.receiptFile.addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      state.pendingFile = file;
+      els.fileName.textContent = file.name;
+      els.previewImg.src = URL.createObjectURL(file);
+      els.dzIdle.classList.add('hidden');
+      els.dzPreview.classList.remove('hidden');
+      processReceipt();   // OCR kicks off automatically on upload
+    });
+
+    // Mock OCR pipeline: 1.5s spinner → parse schema → merge into dataset.
+    function processReceipt() {
+      els.scanSubmit.disabled = true;
+      els.scanStatus.classList.remove('hidden');
+      els.scanStatus.innerHTML = `
+        <div class="flex items-center justify-center gap-2.5 py-2 text-gray-400">
+          <svg class="animate-spin h-5 w-5 text-neon-cyan" viewBox="0 0 24 24" fill="none">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+            <path class="opacity-90" fill="currentColor" d="M4 12a8 8 0 0 1 8-8V0C5.4 0 0 5.4 0 12h4z"/>
+          </svg>
+          <span class="animate-pulse text-sm">Running OCR · extracting prices…</span>
+        </div>`;
+
+      setTimeout(() => {
+        const receipt = generateMockReceipt();         // simulated extraction
+        const { store, isNew } = mergeReceipt(receipt); // append to global dataset
+        state.points += 50;
+        els.pointsBadge.textContent = state.points.toLocaleString();
+        renderReceipt(receipt, isNew);
+        toast('Decentralized Price Map Updated! +50 Points Earned.');
+        els.scanSubmit.disabled = false;
+        els.scanSubmit.innerHTML = DONE_BTN_HTML;
+      }, 1500);
+    }
+
+    // Show the structured fields pulled from the receipt.
+    function renderReceipt(r, isNew) {
+      const when = new Date(r.timestamp).toLocaleString();
+      els.scanStatus.innerHTML = `
+        <div class="text-left fade-in space-y-3">
+          <div class="flex items-center gap-2 text-neon-lime font-semibold text-sm">
+            <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+            Extracted ${r.items.length} prices · ${isNew ? 'new store added to map' : 'prices updated'}
+          </div>
+          <div class="rounded-xl bg-ink-700 border border-ink-600 p-3 text-xs">
+            <div class="grid grid-cols-[auto,1fr] gap-x-3 gap-y-1">
+              <span class="text-gray-500">Timestamp</span><span class="text-gray-300 tabular-nums">${escapeHtml(when)}</span>
+              <span class="text-gray-500">Store</span><span class="text-gray-300">${escapeHtml(r.storeName)}</span>
+              <span class="text-gray-500">Coordinates</span><span class="text-gray-300 tabular-nums">${r.location.lat.toFixed(4)}, ${r.location.lng.toFixed(4)}</span>
+            </div>
+            <div class="mt-2 pt-2 border-t border-ink-600 space-y-1">
+              ${r.items.map(it => `
+                <div class="flex justify-between">
+                  <span class="capitalize text-gray-300">${escapeHtml(it.name)}</span>
+                  <span class="text-neon-cyan tabular-nums">£${it.price.toFixed(2)}</span>
+                </div>`).join('')}
+            </div>
+          </div>
+          <p class="text-[11px] text-gray-500 leading-relaxed">These prices now feed the optimizer — run “Optimize Route” to see them applied.</p>
+        </div>`;
+    }
+
+    els.scanSubmit.addEventListener('click', () => {
+      if (!els.scanSubmit.disabled) closeScan();
+    });
+
+    // ---- Shopping-list scan modal ----
+    const LIST_DONE_HTML = els.listSubmit.innerHTML;
+
+    function openList() {
+      els.listModal.classList.remove('hidden');
+      document.body.style.overflow = 'hidden';
+    }
+    function closeList() {
+      els.listModal.classList.add('hidden');
+      document.body.style.overflow = '';
+      resetList();
+    }
+    function resetList() {
+      els.listFile.value = '';
+      els.listDzIdle.classList.remove('hidden');
+      els.listDzPreview.classList.add('hidden');
+      els.listStatus.classList.add('hidden');
+      els.listStatus.innerHTML = '';
+      els.listSubmit.disabled = true;
+    }
+
+    els.scanListBtn.addEventListener('click', openList);
+    els.listClose.addEventListener('click', closeList);
+    els.listBackdrop.addEventListener('click', closeList);
+    els.listSubmit.addEventListener('click', () => {
+      if (!els.listSubmit.disabled) closeList();
+    });
+
+    els.listFile.addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      els.listFileName.textContent = file.name;
+      els.listPreviewImg.src = URL.createObjectURL(file);
+      els.listDzIdle.classList.add('hidden');
+      els.listDzPreview.classList.remove('hidden');
+      processList();   // OCR kicks off automatically on upload
+    });
+
+    // Mock OCR: 1.5s spinner → extract item names → add to the basket.
+    function processList() {
+      els.listSubmit.disabled = true;
+      els.listStatus.classList.remove('hidden');
+      els.listStatus.innerHTML = `
+        <div class="flex items-center justify-center gap-2.5 py-2 text-gray-400">
+          <svg class="animate-spin h-5 w-5 text-neon-violet" viewBox="0 0 24 24" fill="none">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+            <path class="opacity-90" fill="currentColor" d="M4 12a8 8 0 0 1 8-8V0C5.4 0 0 5.4 0 12h4z"/>
+          </svg>
+          <span class="animate-pulse text-sm">Reading list · extracting items…</span>
+        </div>`;
+
+      setTimeout(() => {
+        const items = generateMockShoppingList();
+        const existing = new Set(state.basket.map(i => i.name.trim().toLowerCase()));
+        const added = [];
+        items.forEach(name => {
+          if (!existing.has(name.toLowerCase())) {
+            addItem(name);
+            added.push(name);
+            existing.add(name.toLowerCase());
+          }
+        });
+        renderListResult(items, added);
+        toast(`Shopping list scanned · ${added.length} item${added.length === 1 ? '' : 's'} added`);
+        els.listSubmit.disabled = false;
+        els.listSubmit.innerHTML = LIST_DONE_HTML;
+      }, 1500);
+    }
+
+    function renderListResult(items, added) {
+      const addedSet = new Set(added.map(s => s.toLowerCase()));
+      els.listStatus.innerHTML = `
+        <div class="text-left fade-in space-y-3">
+          <div class="flex items-center gap-2 text-neon-violet font-semibold text-sm">
+            <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+            Recognized ${items.length} item${items.length === 1 ? '' : 's'} · ${added.length} added
+          </div>
+          <div class="rounded-xl bg-ink-700 border border-ink-600 p-3 text-xs space-y-1">
+            ${items.map(name => {
+              const isNew = addedSet.has(name.toLowerCase());
+              return `<div class="flex items-center justify-between">
+                <span class="text-gray-300">${escapeHtml(name)}</span>
+                <span class="text-[11px] ${isNew ? 'text-neon-violet' : 'text-gray-500'}">${isNew ? 'added' : 'already in basket'}</span>
+              </div>`;
+            }).join('')}
+          </div>
+        </div>`;
+    }
+
+    // ============================================================
+    //  LIVE LOCATION — follow the shopper as they travel
+    // ============================================================
+    let watchId = null, meMarker = null, accCircle = null, meCentered = false, lastRoute = null;
+
+    function startTracking() {
+      if (!('geolocation' in navigator)) { toast('Location isn’t supported on this device'); return; }
+      meCentered = false;
+      els.locateBtn.classList.add('locate-active');
+      watchId = navigator.geolocation.watchPosition(onPos, onPosErr, {
+        enableHighAccuracy: true, maximumAge: 2000, timeout: 15000,
+      });
+      toast('Live location on — your dot follows you as you travel');
+    }
+    function stopTracking() {
+      if (watchId != null) navigator.geolocation.clearWatch(watchId);
+      watchId = null;
+      meLayer.clearLayers(); meMarker = null; accCircle = null;
+      els.locateBtn.classList.remove('locate-active');
+    }
+    function onPos(pos) {
+      const { latitude: lat, longitude: lng, accuracy } = pos.coords;
+      const ll = [lat, lng];
+      if (!meMarker) {
+        meMarker = L.marker(ll, { icon: meIcon(), zIndexOffset: 1000 }).addTo(meLayer);
+        accCircle = L.circle(ll, { radius: accuracy, color: '#2563eb', weight: 1, opacity: .4, fillColor: '#2563eb', fillOpacity: .12 }).addTo(meLayer);
+      } else {
+        meMarker.setLatLng(ll);
+        accCircle.setLatLng(ll).setRadius(accuracy);
+      }
+      if (!meCentered) { map.setView(ll, Math.max(map.getZoom(), 15)); meCentered = true; }
+      updateNextStop(meMarker.getLatLng());
+    }
+    function onPosErr(err) {
+      stopTracking();
+      toast(err.code === 1 ? 'Location permission denied' : 'Couldn’t get your location');
+    }
+    // While tracking, show live distance to the closest stop on the route.
+    function updateNextStop(latlng) {
+      if (!lastRoute || !lastRoute.stops || !lastRoute.stops.length) return;
+      const from = { lat: latlng.lat, lng: latlng.lng };
+      let best = null;
+      lastRoute.stops.forEach(s => {
+        const d = haversine(from, s.store);
+        if (!best || d < best.d) best = { d, name: s.store.name };
+      });
+      if (best) els.routeMeta.innerHTML =
+        `<span class="text-blue-700 font-semibold">● ${best.d.toFixed(1)} km to ${escapeHtml(best.name)}</span>`;
+    }
+
+    els.locateBtn.addEventListener('click', () => {
+      if (watchId != null) stopTracking();
+      else startTracking();
+    });
+
+    // Hand the optimized round-trip off to Google Maps for real turn-by-turn.
+    function gmapsUrl(route) {
+      const origin = (meMarker
+        ? `${meMarker.getLatLng().lat},${meMarker.getLatLng().lng}`
+        : `${HOME.lat},${HOME.lng}`);
+      const destination = `${HOME.lat},${HOME.lng}`;                 // round trip home
+      const waypoints = route.stops.map(s => `${s.store.lat},${s.store.lng}`).join('|');
+      return `https://www.google.com/maps/dir/?api=1&origin=${origin}`
+           + `&destination=${destination}&waypoints=${encodeURIComponent(waypoints)}&travelmode=driving`;
+    }
+
+    // ---- Toast ----
+    let toastTimer;
+    function toast(msg) {
+      const inner = els.toast.firstElementChild;
+      inner.textContent = msg;
+      els.toast.classList.remove('hidden');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => els.toast.classList.add('hidden'), 2400);
+    }
+
+    // ---- Wire up ----
+    els.addForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      addItem(els.itemInput.value);
+      els.itemInput.value = '';
+      els.itemInput.focus();
+    });
+
+    // seed a couple of items so the demo isn't empty
+    ['Oat milk', 'Bananas', 'Coffee beans'].forEach(addItem);
+    setPriority('balanced');
+    renderBasket();
+  })();
+
+  // ---- Account: greeting + sign out ----
+  (() => {
+    let user = null;
+    try { user = JSON.parse(localStorage.getItem('spatialcart_user')); } catch (e) {}
+    const tag = document.getElementById('userTag');
+    if (user && user.name && tag) {
+      const first = user.name.split(' ')[0];
+      tag.textContent = `Hi, ${first} 👋`;
+    }
+    const btn = document.getElementById('signOutBtn');
+    if (btn) btn.addEventListener('click', () => {
+      localStorage.removeItem('spatialcart_user');
+      location.replace('index.html');
+    });
+  })();
+  </script>
+</body>
+</html>
