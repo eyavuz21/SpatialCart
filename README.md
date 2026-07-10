@@ -1,6 +1,6 @@
 # 🛒 SpatialCart
 
-**Plans the cheapest practical shopping route across the real supermarkets around you — then tracks every pound you save.**
+**Plans the cheapest practical shopping route across the real supermarkets around you, then tracks every pound you save.**
 
 **🔴 Live demo: <https://spatialcart.up.railway.app>**
 
@@ -12,6 +12,6 @@ The idea came straight out of my PhD work on how people navigate real-world envi
 
 ## Files
 
-- `index.html` — landing page
-- `app.html` — the route planner
-- `journey.html` — the saved-journey / savings tracker
+- `index.html`: landing page
+- `app.html`: the route planner
+- `journey.html`: the saved-journey / savings tracker
